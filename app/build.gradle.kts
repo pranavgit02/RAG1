@@ -50,8 +50,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
-    implementation("com.google.ai.edge.localagents:localagents-rag:0.1.0")
-    implementation("com.google.mediapipe:tasks-genai:0.10.22")
+    implementation("com.google.ai.edge.localagents:localagents-rag:0.3.0")
+    implementation("com.google.mediapipe:tasks-genai:0.10.29")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -60,4 +60,10 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+configurations.all {
+    resolutionStrategy {
+        force("com.google.mediapipe:tasks-genai:0.10.29")
+    }
 }

@@ -76,12 +76,18 @@ fun ChatScreen(vm: ChatViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    vm.modelStatusText.value,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        vm.embedderStatusText.value,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        vm.llmStatusText.value,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     vm.ragStatusText.value,
                     fontSize = 12.sp,
@@ -119,7 +125,6 @@ fun ChatScreen(vm: ChatViewModel) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .imePadding()
                     .navigationBarsPadding()
                     .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.Bottom
@@ -132,7 +137,8 @@ fun ChatScreen(vm: ChatViewModel) {
                     enabled = true,
                     supportingText = {
                         val canSend = vm.canSendNow(input)
-                        if (!vm.isModelReady.value) Text("Wait for model initialization")
+                        if (!vm.isEmbedderReady.value) Text("Wait for embedder initialization")
+                        else if (!vm.isLlmReady.value) Text("Wait for LLM initialization")
                         else if (!vm.isRagReady.value) Text("Pick a .txt and wait for indexing")
                         else if (vm.isIndexing.value) Text("Indexing in progress…")
                         else if (!canSend) Text("Type something")

@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -20,12 +21,16 @@ data class ChatMessage(
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pipeline = RagPipeline(app)
+    private var llmInitJob: Job? = null
 
     val messages = mutableStateListOf<ChatMessage>()
 
-    // Top status
-    val modelStatusText = mutableStateOf("initializing model...")
-    val isModelReady = mutableStateOf(false)
+    // Model status (separate embedder vs LLM)
+    val embedderStatusText = mutableStateOf("initializing embedder...")
+    val isEmbedderReady = mutableStateOf(false)
+
+    val llmStatusText = mutableStateOf("initializing LLM...")
+    val isLlmReady = mutableStateOf(false)
 
     val ragStatusText = mutableStateOf("No .txt loaded")
     val isIndexing = mutableStateOf(false)
@@ -33,23 +38,46 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val loadedFileName = mutableStateOf<String?>(null)
 
     init {
-        // kick off model init
-        viewModelScope.launch {
-            try {
-                pipeline.awaitModelReady()
-                isModelReady.value = true
-                modelStatusText.value = "Model ready"
-            } catch (t: Throwable) {
-                isModelReady.value = false
-                modelStatusText.value = "Model init failed"
-                ragStatusText.value = "Error: ${t.message ?: t.javaClass.simpleName}"
+        startPipelineInit()
+    }
+
+    private fun startPipelineInit() {
+        // Cancel any previous init attempt (e.g., after New Chat)
+        llmInitJob?.cancel()
+        llmInitJob = null
+
+        // --- Embedder status ---
+        val embedderPresent = pipeline.isEmbedderModelPresent()
+        isEmbedderReady.value = embedderPresent
+        embedderStatusText.value = if (embedderPresent) "Embedder Ready" else "Embedder model missing"
+
+        // --- LLM status ---
+        val llmPresent = pipeline.isLlmModelPresent()
+        isLlmReady.value = false
+        llmStatusText.value = if (llmPresent) "Initializing LLM..." else "LLM model missing"
+        if (!llmPresent) return
+
+        llmInitJob =
+            viewModelScope.launch {
+                try {
+                    withContext(Dispatchers.Default) {
+                        pipeline.awaitLlmReady()
+                        // One tiny call to prevent false "ready" states.
+                        pipeline.warmupLlm()
+                    }
+                    isLlmReady.value = true
+                    llmStatusText.value = "LLM Model Ready"
+                } catch (t: Throwable) {
+                    isLlmReady.value = false
+                    llmStatusText.value = "LLM init failed"
+                    ragStatusText.value = "Error: ${t.message ?: t.javaClass.simpleName}"
+                }
             }
-        }
     }
 
     fun canSendNow(currentInput: String): Boolean {
         if (currentInput.isBlank()) return false
-        return isModelReady.value && isRagReady.value && !isIndexing.value
+        return isLlmReady.value && isRagReady.value && !isIndexing.value
     }
 
     fun onPickTxt(uri: Uri, displayName: String?) {
@@ -60,15 +88,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             loadedFileName.value = displayName ?: "selected_file.txt"
             ragStatusText.value = "Reading file..."
 
+            if (!isEmbedderReady.value) {
+                ragStatusText.value = "Embedder not ready"
+                isIndexing.value = false
+                return@launch
+            }
+
             try {
-                val rawText = withContext(Dispatchers.IO) {
-                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                        ?: throw IllegalStateException("Could not open file")
-                }
+                val rawText =
+                    withContext(Dispatchers.IO) {
+                        ctx.contentResolver.openInputStream(uri)?.use {
+                            it.readBytes().toString(Charsets.UTF_8)
+                        } ?: throw IllegalStateException("Could not open file")
+                    }
 
                 ragStatusText.value = "Chunking + indexing..."
-                pipeline.indexUserText(rawText) { chunkCount ->
-                    ragStatusText.value = "Indexing... ($chunkCount chunks)"
+                withContext(Dispatchers.Default) {
+                    pipeline.indexUserText(rawText) { chunkCount ->
+                        viewModelScope.launch {
+                            ragStatusText.value = "Indexing... ($chunkCount chunks)"
+                        }
+                    }
                 }
 
                 isRagReady.value = true
@@ -89,21 +129,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // placeholder model message (streaming updates will overwrite)
         messages.add(ChatMessage(Role.Model, ""))
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             try {
                 pipeline.generateResponse(userText) { partial ->
-                    // update last message
-                    val lastIdx = messages.lastIndex
-                    if (lastIdx >= 0 && messages[lastIdx].role == Role.Model) {
-                        messages[lastIdx] = ChatMessage(Role.Model, partial)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        val lastIdx = messages.lastIndex
+                        if (lastIdx >= 0 && messages[lastIdx].role == Role.Model) {
+                            messages[lastIdx] = ChatMessage(Role.Model, partial)
+                        }
                     }
                 }
             } catch (t: Throwable) {
-                val lastIdx = messages.lastIndex
-                if (lastIdx >= 0 && messages[lastIdx].role == Role.Model) {
-                    messages[lastIdx] = ChatMessage(Role.Model, "Error: ${t.message ?: t.javaClass.simpleName}")
-                } else {
-                    messages.add(ChatMessage(Role.Model, "Error: ${t.message ?: t.javaClass.simpleName}"))
+                val errorText = "Error: ${t.message ?: t.javaClass.simpleName}"
+
+                withContext(Dispatchers.Main) {
+                    val lastIdx = messages.lastIndex
+                    if (lastIdx >= 0 && messages[lastIdx].role == Role.Model) {
+                        messages[lastIdx] = ChatMessage(Role.Model, errorText)
+                    } else {
+                        messages.add(ChatMessage(Role.Model, errorText))
+                    }
+
+                    val notInitialized = (t.message ?: "").lowercase().contains("not initialized")
+                    if (notInitialized) {
+                        isLlmReady.value = false
+                        llmStatusText.value = "LLM not ready"
+                    }
+                }
+
+                // If we hit the "not initialized" race, try re-initializing once.
+                val notInitialized = (t.message ?: "").lowercase().contains("not initialized")
+                if (notInitialized) {
+                    startPipelineInit()
                 }
             }
         }
@@ -118,21 +175,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         loadedFileName.value = null
         ragStatusText.value = "No .txt loaded"
 
-        isModelReady.value = false
-        modelStatusText.value = "initializing model..."
-
+        // Recreate pipeline (clears in-memory vector store)
         pipeline = RagPipeline(getApplication())
 
-        viewModelScope.launch {
-            try {
-                pipeline.awaitModelReady()
-                isModelReady.value = true
-                modelStatusText.value = "Model ready"
-            } catch (t: Throwable) {
-                isModelReady.value = false
-                modelStatusText.value = "Model init failed"
-                ragStatusText.value = "Error: ${t.message ?: t.javaClass.simpleName}"
-            }
-        }
+        // Reset per-model readiness
+        startPipelineInit()
     }
 }
