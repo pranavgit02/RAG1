@@ -42,16 +42,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startPipelineInit() {
-        // Cancel any previous init attempt (e.g., after New Chat)
         llmInitJob?.cancel()
         llmInitJob = null
 
-        // --- Embedder status ---
+        // --- Embedder status (only required for RAG/indexing) ---
         val embedderPresent = pipeline.isEmbedderModelPresent()
         isEmbedderReady.value = embedderPresent
         embedderStatusText.value = if (embedderPresent) "Embedder Ready" else "Embedder model missing"
 
-        // --- LLM status ---
+        // --- LLM status (required for both normal chat and RAG) ---
         val llmPresent = pipeline.isLlmModelPresent()
         isLlmReady.value = false
         llmStatusText.value = if (llmPresent) "Initializing LLM..." else "LLM model missing"
@@ -62,7 +61,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     withContext(Dispatchers.Default) {
                         pipeline.awaitLlmReady()
-                        // One tiny call to prevent false "ready" states.
+                        // Warmup prevents false "ready" states.
                         pipeline.warmupLlm()
                     }
                     isLlmReady.value = true
@@ -75,9 +74,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
     }
 
+    /**
+     * Behavior:
+     * - If NO file attached: regular chat mode (LLM-only) => allow send when LLM ready and not indexing.
+     * - If file attached: RAG mode => allow send only after indexing completes (isRagReady).
+     */
     fun canSendNow(currentInput: String): Boolean {
         if (currentInput.isBlank()) return false
-        return isLlmReady.value && isRagReady.value && !isIndexing.value
+        if (!isLlmReady.value) return false
+        if (isIndexing.value) return false
+
+        val hasFile = loadedFileName.value != null
+        if (hasFile && !isRagReady.value) return false
+
+        return true
     }
 
     fun onPickTxt(uri: Uri, displayName: String?) {
@@ -105,7 +115,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 ragStatusText.value = "Chunking + indexing..."
                 withContext(Dispatchers.Default) {
                     pipeline.indexUserText(rawText) { chunkCount ->
-                        viewModelScope.launch {
+                        viewModelScope.launch(Dispatchers.Main) {
                             ragStatusText.value = "Indexing... ($chunkCount chunks)"
                         }
                     }
@@ -157,7 +167,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
 
-                // If we hit the "not initialized" race, try re-initializing once.
+                // Keep your existing retry-init behavior (not a reset-button fix)
                 val notInitialized = (t.message ?: "").lowercase().contains("not initialized")
                 if (notInitialized) {
                     startPipelineInit()
@@ -167,7 +177,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun newChat() {
-        // wipe UI + wipe vector DB (in-memory) by recreating pipeline
+        // Keep your current reset behavior unchanged (per your request).
         messages.clear()
 
         isIndexing.value = false

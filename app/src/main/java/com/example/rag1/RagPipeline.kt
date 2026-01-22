@@ -358,9 +358,12 @@ class RagPipeline(private val app: Application) {
         private const val EMBEDDING_TFLITE_FILENAME = "embeddinggemma-300M_seq256_mixed-precision.tflite"
 
         private const val QA_PROMPT_TEMPLATE =
-            "You are a helpful assistant. Use ONLY the provided context to answer.\n\n" +
+            "You are a helpful assistant.\n" +
+                    "If Context is empty or not relevant, answer normally.\n" +
+                    "If Context contains relevant info, prefer using it.\n\n" +
                     "Context:\n{0}\n\n" +
-                    "User question:\n{1}\n\n" +
-                    "Answer:"
+                    "User:\n{1}\n\n" +
+                    "Assistant:"
+
     }
 }

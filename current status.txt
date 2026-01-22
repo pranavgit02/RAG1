@@ -1,0 +1,9 @@
+Fixed;
+- Bold text markdown
+- Remove tailing gap
+- Regular chat when no file is attached
+
+Reset button's current behaviour;
+- For normal chat, reset button reinitializes the LLM and new chat works fine
+- For RAG chat(file attached), reset button does the same but after that new chat doesn't work,
+further re-clicking of the reset button crashes the app

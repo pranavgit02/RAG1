@@ -20,6 +20,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,7 +77,9 @@ fun ChatScreen(vm: ChatViewModel) {
         ) {
             // Status line(s)
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -107,12 +113,18 @@ fun ChatScreen(vm: ChatViewModel) {
             }
 
             if (vm.isIndexing.value) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                )
             }
 
             // Messages
             LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -136,12 +148,16 @@ fun ChatScreen(vm: ChatViewModel) {
                     label = { Text("Message") },
                     enabled = true,
                     supportingText = {
+                        val hasFile = vm.loadedFileName.value != null
                         val canSend = vm.canSendNow(input)
-                        if (!vm.isEmbedderReady.value) Text("Wait for embedder initialization")
-                        else if (!vm.isLlmReady.value) Text("Wait for LLM initialization")
-                        else if (!vm.isRagReady.value) Text("Pick a .txt and wait for indexing")
-                        else if (vm.isIndexing.value) Text("Indexing in progress…")
-                        else if (!canSend) Text("Type something")
+
+                        when {
+                            !vm.isLlmReady.value -> Text("Wait for LLM initialization")
+                            vm.isIndexing.value -> Text("Indexing knowledge… (chat disabled until done)")
+                            !hasFile -> Text("No knowledge file attached (optional)")
+                            hasFile && !vm.isRagReady.value -> Text("Waiting for indexing…")
+                            !canSend -> Text("Type something")
+                        }
                     }
                 )
                 Spacer(Modifier.width(8.dp))
@@ -150,7 +166,11 @@ fun ChatScreen(vm: ChatViewModel) {
                         val text = input
                         input = ""
                         vm.send(text)
-                        scope.launch { if (vm.messages.isNotEmpty()) listState.animateScrollToItem(vm.messages.size - 1) }
+                        scope.launch {
+                            if (vm.messages.isNotEmpty()) {
+                                listState.animateScrollToItem(vm.messages.size - 1)
+                            }
+                        }
                     },
                     enabled = vm.canSendNow(input)
                 ) {
@@ -164,13 +184,23 @@ fun ChatScreen(vm: ChatViewModel) {
 @Composable
 private fun MessageBubble(msg: ChatMessage) {
     val fromModel = msg.role == Role.Model
-    val bg = if (fromModel) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
-    val fg = if (fromModel) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+    val bg =
+        if (fromModel) MaterialTheme.colorScheme.secondaryContainer
+        else MaterialTheme.colorScheme.primaryContainer
+    val fg =
+        if (fromModel) MaterialTheme.colorScheme.onSecondaryContainer
+        else MaterialTheme.colorScheme.onPrimaryContainer
     val align = if (fromModel) Alignment.CenterStart else Alignment.CenterEnd
 
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = align) {
+        // Fix #1: trim trailing whitespace (removes “gap” at end)
+        // Fix #2: parse **bold** markdown and do NOT show the ** markers
+        val styledText = remember(msg.text) {
+            parseSimpleMarkdown(msg.text.trimEnd())
+        }
+
         Text(
-            text = msg.text,
+            text = styledText,
             color = fg,
             modifier = Modifier
                 .widthIn(max = 340.dp)
@@ -185,5 +215,35 @@ private fun queryDisplayName(cursor: Cursor?): String? {
     return cursor.use {
         val idx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
         if (idx >= 0 && it.moveToFirst()) it.getString(idx) else null
+    }
+}
+
+private val BoldMarkdownRegex =
+    Regex("""\*\*(.+?)\*\*""", setOf(RegexOption.DOT_MATCHES_ALL))
+
+private fun parseSimpleMarkdown(text: String): AnnotatedString {
+    if (!text.contains("**")) return AnnotatedString(text)
+
+    return buildAnnotatedString {
+        var currentIndex = 0
+        for (match in BoldMarkdownRegex.findAll(text)) {
+            val matchStart = match.range.first
+            val matchEnd = match.range.last + 1
+
+            if (matchStart > currentIndex) {
+                append(text.substring(currentIndex, matchStart))
+            }
+
+            val boldText = match.groupValues.getOrNull(1) ?: ""
+            val spanStart = length
+            append(boldText)
+            addStyle(SpanStyle(fontWeight = FontWeight.Bold), spanStart, length)
+
+            currentIndex = matchEnd
+        }
+
+        if (currentIndex < text.length) {
+            append(text.substring(currentIndex))
+        }
     }
 }
